@@ -29,9 +29,9 @@ class Ft4222hDeviceManager:
             device_info = ft4222.getDeviceInfoDetail(i, False)
             #here, the function filters FTDI devices for ID 67330076 to only provide FT4222 FTDI IC's,
             #then only the SPI interface (FT4222 A) is returned to the caller
-            #if device_info['id'] == 67330076 and device_info['serial'] == b'A':
+            #if device_info['id'] == 67330076 and device_info['description'] == b'A':
             # 'A' ASCII == 65
-            if device_info['id'] == 67330076 and device_info['serial'][-1] == 65:
+            if device_info['id'] == 67330076 and device_info['description'][-1] == 65:
                 device_locations.append(device_info['location'])
         return device_locations
 
