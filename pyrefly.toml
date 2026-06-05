@@ -1,0 +1,9 @@
+project-includes = [
+    "."
+]
+
+search_path = [
+    "drivers",
+    "middleware/Sniffer",
+    "middleware/UCI"
+]
