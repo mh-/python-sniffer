@@ -3,17 +3,23 @@
 
 import os
 import sys
-import argparse
-import struct
-import time
 
-# Resolve directory of the current script and the project root to locate drivers and middleware modules
+# Auto-reexecute using virtualenv if available locally
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
+VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python3")
+if os.path.exists(VENV_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(VENV_PYTHON):
+    os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
+
+# Resolve directory of the current script and the project root to locate drivers and middleware modules
 sys.path.append(PROJECT_DIR)
 sys.path.append(os.path.join(PROJECT_DIR, "drivers"))
 sys.path.append(os.path.join(PROJECT_DIR, "middleware", "Sniffer"))
 sys.path.append(os.path.join(PROJECT_DIR, "middleware", "UCI"))
+
+import argparse
+import struct
+import time
 
 # Save the real stdout file descriptor before redirecting it
 REAL_STDOUT_FD = os.dup(1)
@@ -84,8 +90,8 @@ def list_interfaces():
             ORIGINAL_STDOUT.write("interface {value=forthink_uwb_sniffer}{display=Forthink UWB Sniffer}\n")
         else:
             for dev in devices:
-                # Interface identifier contains the hardware location code to support multiple sniffers
-                ORIGINAL_STDOUT.write(f"interface {{value=forthink_uwb_sniffer_{dev.device_location}}}{{display=Forthink UWB Sniffer}}\n")
+                # Interface identifier to support sniffer
+                ORIGINAL_STDOUT.write(f"interface {{value=forthink_uwb_sniffer}}{{display=Forthink UWB Sniffer}}\n")
     except Exception as e:
         sys.stderr.write(f"Error scanning devices: {e}\n")
         ORIGINAL_STDOUT.write("interface {value=forthink_uwb_sniffer}{display=Forthink UWB Sniffer (Scan Error)}\n")
@@ -272,7 +278,7 @@ if __name__ == '__main__':
     parser.add_argument("--preamble-id", type=int, default=9, choices=list(range(9, 25)), help="Preamble Code ID")
     parser.add_argument("--sfd-id", type=int, default=2, choices=[0, 2], help="SFD ID")
 
-    args = parser.parse_args()
+    args, unknown = parser.parse_known_args()
 
     if args.extcap_interfaces:
         list_interfaces()
