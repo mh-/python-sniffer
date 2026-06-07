@@ -110,7 +110,7 @@ std::string bytes_to_hex(const uint8_t* data, size_t len) {
 FT_HANDLE spi_handle = nullptr;
 FT_HANDLE gpio_handle = nullptr;
 
-void fast_capture_loop(const std::string& fifo_path, uint32_t channel, const std::vector<uint8_t>& tap_hdr, const std::vector<uint8_t>& start_rx_cmd, bool is_ncj29d5) {
+void cpp_capture_loop(const std::string& fifo_path, uint32_t channel, const std::vector<uint8_t>& tap_hdr, const std::vector<uint8_t>& start_rx_cmd, bool is_ncj29d5) {
     // fifo_path may be a numeric fd (inherited from Python) or a filesystem path
     int fifo_fd = -1;
     bool is_fd_number = !fifo_path.empty() && std::all_of(fifo_path.begin(), fifo_path.end(), ::isdigit);
@@ -125,7 +125,7 @@ void fast_capture_loop(const std::string& fifo_path, uint32_t channel, const std
             return;
         }
     }
-    fprintf(stderr, "INFO Fast capture loop started. FD: %d\n", fifo_fd); fflush(stderr);
+    fprintf(stderr, "INFO C++ capture loop started. FD: %d\n", fifo_fd); fflush(stderr);
 
     bool rx_mode_started = false;
     std::vector<uint8_t> tap = tap_hdr;
@@ -291,7 +291,7 @@ void fast_capture_loop(const std::string& fifo_path, uint32_t channel, const std
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: fast_usb_capture <libft4222.dylib path>" << std::endl;
+        std::cerr << "Usage: cpp_usb_capture <libft4222.dylib path>" << std::endl;
         return 1;
     }
 
@@ -394,7 +394,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "ERR " << status << std::endl;
             }
         }
-        else if (cmd == "START_FAST_CAPTURE") {
+        else if (cmd == "START_CPP_CAPTURE") {
             std::string fifo;
             int channel;
             int is_ncj29d5;
@@ -407,7 +407,7 @@ int main(int argc, char* argv[]) {
             
             std::cout << "OK" << std::endl; // Confirm transition
             
-            fast_capture_loop(fifo, channel, tap, rx_cmd, is_ncj29d5);
+            cpp_capture_loop(fifo, channel, tap, rx_cmd, is_ncj29d5);
             break; // Exit after loop completes or fails
         }
         else if (cmd == "CLOSE") {

@@ -163,4 +163,4 @@ cython_debug/
 .vscode/settings.json
 
 # UWB Sniffer compiled C++ proxy binary
-wireshark-plugin/fast_usb_capture
+wireshark-plugin/cpp_usb_capture
