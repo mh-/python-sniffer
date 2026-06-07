@@ -5,19 +5,14 @@ forthink_fast_sniffer_extcap.py  —  "superfast" UWB sniffer extcap plugin
 
 Difference from forthink_sniffer_extcap.py:
   Instead of the slow per-packet START_RX_MODE round-trip, this variant
-  uploads 5 firmware memory patches extracted from the Windows USB trace and
+  uploads memory patches extracted from the Windows sniffer tool#s USB trace and
   then issues SNIFFER_STORE_RADIO_SETTINGS which commits them AND arms the chip
   for fully autonomous continuous RX.  The host then passively receives UCI NTF
   messages as packets arrive — no re-arming per packet.
 
   This mirrors exactly what the Windows sniffer tool does and enables capturing
-  fast consecutive UWB packets (≥5 ms cadence) that the original Python loop
+  fast consecutive UWB packets (≥2 ms cadence) that the original Python loop
   silently misses.
-
-Limitations:
-  - The firmware patches are hard-coded for Ch9 / Preamble 9 / SFD 2.
-    Until a per-channel patch set is extracted or generated, channel / preamble /
-    SFD selection in the Wireshark UI is accepted but ignored.
 """
 
 import os
