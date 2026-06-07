@@ -26,9 +26,16 @@ import sys
 # Auto-reexecute using virtualenv if available locally
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 PROJECT_DIR = os.path.dirname(SCRIPT_DIR)
-VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python3")
+if os.name == 'nt':
+    VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "Scripts", "python.exe")
+else:
+    VENV_PYTHON = os.path.join(PROJECT_DIR, "venv", "bin", "python3")
+
 if os.path.exists(VENV_PYTHON) and os.path.realpath(sys.executable) != os.path.realpath(VENV_PYTHON):
-    os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
+    try:
+        os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
+    except OSError:
+        pass # Fallback to current python if execv fails (e.g. copied mac venv to windows)
 
 # Resolve module search paths
 sys.path.append(PROJECT_DIR)
@@ -38,6 +45,7 @@ sys.path.append(os.path.join(PROJECT_DIR, "middleware", "UCI"))
 
 import argparse
 import struct
+import math
 import time
 
 # ---------------------------------------------------------------------------
@@ -87,8 +95,11 @@ ORIGINAL_STDOUT = os.fdopen(REAL_STDOUT_FD, 'w')
 
 import tempfile
 LOG_FILE_PATH = os.path.join(tempfile.gettempdir(), "forthink_fast_sniffer.log")
+ENABLE_LOGGING = False  # Set to False to disable all disk logging
 
 def log_to_file(msg):
+    if not ENABLE_LOGGING:
+        return
     try:
         with open(LOG_FILE_PATH, "a") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
@@ -112,7 +123,9 @@ try:
     from forthink_uwb_dongle import scan_uwb_dongle_devices, forthink_uwb_dongle
     from nxp_ft4222h import EnumFtdiSpiMode
     from SnifferDevice import SnifferDevice, SnifferParam
-    from uci_defs import EnumUciStatus
+    from uci_defs import EnumUciStatus, EnumUciGid, EnumSnifferOid, EnumUciMessageType
+    from uci_message import uci_sniffer_start_rx_mode_rsp_callback, UciMessage
+    from uci_sniffer_rx_rsp import SnifferRxResult
 
     import console_helper
     console_helper.log_i = lambda info: log_to_file(f"[dbg/I] {info}")
@@ -192,9 +205,11 @@ def list_config(interface):
 
 def _send_patch_and_wait(device, patch_bytes, label):
     """Transmit a single UCI patch command and read back the response."""
-    device.transmit_uci_command(patch_bytes)
-    resp = device.receive_uci_message(timeout_ms=500)
-    log_to_file(f"  {label}: resp.status={resp.status}")
+    device.transmit_uci_command(list(patch_bytes))
+    # The Windows tool reads exactly the payload length without the 2-byte CRC at the end
+    resp = device.receive_uci_message(timeout_ms=500, crc_enable=False)
+    hex_msg = bytes(resp.msg_buffer).hex() if resp.msg_buffer else "None"
+    log_to_file(f"  {label}: port_status={resp.status.name if hasattr(resp.status, 'name') else resp.status} msg={hex_msg}")
     return resp
 
 
@@ -241,42 +256,112 @@ def capture(interface, fifo, channel, preamble_id, sfd_id):
         sniffer_app = SnifferDevice(dongle.ft4222_device)
         device = sniffer_app.device
 
+        # Register sniffer start RX notification callback
+        sniffer_app.register_notification_callback(
+            EnumUciGid.UWB_SNIFFER_GID.value,
+            EnumSnifferOid.SNIFFER_START_RX_MODE_OID.value,
+            uci_sniffer_start_rx_mode_rsp_callback
+        )
+
         # Hard-reset the chip and wait for the boot NTF
         device.hard_reset()
         boot_resp = sniffer_app.wait_response(timeout_ms=500)
         if boot_resp.status is not EnumUciStatus.UCI_STATUS_REBOOT:
             log_to_file(f"Warning: unexpected reboot status: {boot_resp.status}")
 
-        # Note: the patches are hard-coded for Ch9/Preamble9/SFD2.
-        # Log a warning if the user selected different settings.
-        if channel != 9 or preamble_id != 9 or sfd_id != 2:
-            log_to_file(
-                f"WARNING: firmware patches are fixed for Ch9/P9/SFD2.  "
-                f"Requested Ch{channel}/P{preamble_id}/SFD{sfd_id} will be ignored."
-            )
-            sys.stderr.write(
-                f"[forthink_fast] WARNING: firmware patches are fixed for Ch9/Preamble9/SFD2.  "
-                f"Ch{channel}/P{preamble_id}/SFD{sfd_id} ignored.\n"
-            )
 
         # Upload patch group 1
-        log_to_file("Uploading firmware patch group 1 ...")
-        _send_patch_and_wait(device, _PATCH_1A, "patch_1A")
+        log_to_file(f"Uploading firmware patch group 1 for SFD {sfd_id} ...")
+        
+        patch_1A = bytearray(_PATCH_1A)
+        if sfd_id == 0:
+            patch_1A[208] = 0x00
+            patch_1A[209] = 0x88
+            patch_1A[224] = 0x00
+            patch_1A[225] = 0x9a
+            patch_1A[226] = 0x10
+            patch_1A[227] = 0x02
+            patch_1A[228] = 0x04
+            patch_1A[229] = 0x07
+        elif sfd_id == 2:
+            patch_1A[208] = 0x00
+            patch_1A[209] = 0xb7
+            patch_1A[224] = 0x00
+            patch_1A[225] = 0xff
+            patch_1A[226] = 0x18
+            patch_1A[227] = 0x02
+            patch_1A[228] = 0x08
+            patch_1A[229] = 0x07
+            
+        _send_patch_and_wait(device, bytes(patch_1A), "patch_1A")
         _send_patch_and_wait(device, _PATCH_1B, "patch_1B")
         _send_patch_and_wait(device, _PATCH_1C, "patch_1C")
 
-        # Commit group 1
         log_to_file("SNIFFER_STORE_RADIO_SETTINGS — committing group 1 ...")
         _send_patch_and_wait(device, _PATCH_STORE_RADIO, "store_radio_1")
 
         # Upload patch group 2
         log_to_file("Uploading firmware patch group 2 ...")
-        _send_patch_and_wait(device, _PATCH_2A, "patch_2A")
+        
+        patch_2A = bytearray(_PATCH_2A)
+        if sfd_id == 0:
+            patch_2A[162] = 0xc4
+            patch_2A[163] = 0xc1
+        elif sfd_id == 2:
+            patch_2A[162] = 0x7f
+            patch_2A[163] = 0xdf
+            
+        _send_patch_and_wait(device, bytes(patch_2A), "patch_2A")
         _send_patch_and_wait(device, _PATCH_2B, "patch_2B")
 
         # Commit group 2 — this also arms the chip for autonomous continuous RX
         log_to_file("SNIFFER_STORE_RADIO_SETTINGS — committing group 2 (arms RX) ...")
         _send_patch_and_wait(device, _PATCH_STORE_RADIO, "store_radio_2")
+
+        # 1. CFG_RANGING_APP (2E 28) - Sets the Center Frequency!
+        if channel == 5:
+            freq_hz = 6489600
+        elif channel == 6:
+            freq_hz = 6988800
+        elif channel == 8:
+            freq_hz = 7488000
+        elif channel == 9:
+            freq_hz = 7987200
+        else:
+            freq_hz = 7987200
+            
+        freq_reg = int(freq_hz / 256)
+        # Payload format: 0x00 (1 byte), Center Freq (2 bytes), then hardcoded params (11 bytes)
+        payload_2e28 = bytes([0x00]) + struct.pack("<H", freq_reg) + bytes.fromhex("0000500064003800ff0001")
+        cfg_ranging_app = bytes([0x2e, 0x28, 0x00, len(payload_2e28)]) + payload_2e28
+        
+        log_to_file(f"Sending CFG_RANGING_APP for Channel {channel} ({freq_hz/1000} MHz) ...")
+        _send_patch_and_wait(device, cfg_ranging_app, "cfg_ranging_app")
+        
+        # 2. CFG_RX_MODE (2E 1A) - Sets the Preamble ID!
+        preamble_index = preamble_id - 8
+        radio = 0x0C # Hardcoded 12 for now (from Windows trace), might need to adjust based on SFD later
+        sts_offset = 0
+        toa_algorithm = 1
+        rx_delay = 0
+        timeout = 0x00FFFFFF
+        rx_cycles = 1
+        cipher_mode = 0xFF
+        xtal_temp_comp = 1
+        
+        payload_2e1a = struct.pack('<BBBBHIBBB', radio, preamble_index, sts_offset,
+                           toa_algorithm, rx_delay, timeout, rx_cycles,
+                           cipher_mode, xtal_temp_comp)
+        
+        cfg_rx_mode = bytes([0x2e, 0x1a, 0x00, len(payload_2e1a)]) + payload_2e1a
+        
+        log_to_file(f"Sending CFG_RX_MODE for Preamble ID {preamble_id} (Index {preamble_index}) ...")
+        _send_patch_and_wait(device, cfg_rx_mode, "cfg_rx_mode")
+        
+        # 3. 2A 3A
+        cmd_2a3a = bytes.fromhex("2a3a00020001")
+        log_to_file("Sending unknown 2A 3A command ...")
+        _send_patch_and_wait(device, cmd_2a3a, "cmd_2a3a")
 
         log_to_file("Chip armed for autonomous continuous RX (Ch9/Preamble9/SFD2).")
     except Exception as e:
@@ -306,70 +391,101 @@ def capture(interface, fifo, channel, preamble_id, sfd_id):
     # Passive capture loop — chip signals packets via INT_N; we just receive
     # -----------------------------------------------------------------------
     log_to_file("Passive capture loop started.  Waiting for UCI NTF messages ...")
+    packet_count = 0
     try:
         while True:
             try:
-                # wait_response() drives receive_uci_message() which:
-                #   1. Blocks until INT_N goes LOW (chip has data ready)
-                #   2. Pulls CS_N LOW, reads 5-byte UCI header, then payload
-                #   3. Releases CS_N HIGH and waits for INT_N to go HIGH
-                # No re-arming command is sent — the chip is continuously receiving.
-                result = sniffer_app.wait_response(timeout_ms=17000)
+                # Use receive_uci_message directly instead of wait_response, because
+                # wait_response will loop and swallow NOTIFICATION messages while waiting
+                # for a RESPONSE.
+                raw_result = sniffer_app.device.receive_uci_message(timeout_ms=1000, crc_enable=False)
 
-                if result.status == EnumUciStatus.UCI_STATUS_OK:
-                    rx_result = result.uci_result
-                    if (rx_result is not None
-                            and hasattr(rx_result, 'payload')
-                            and rx_result.payload
-                            and len(rx_result.payload) > 0):
+                if raw_result.status.value == 1 and raw_result.msg_buffer:
+                    log_to_file(f"Got raw message: {bytes(raw_result.msg_buffer).hex()}")
+                    msg = UciMessage.from_bytes(raw_result.msg_buffer)
+                    if msg and msg.message_type == EnumUciMessageType.UCI_MT_NOTIFICATION:
+                        data = None
+                        rssi = 0.0
+                        # 1. Check for legacy SNIFFER_START_RX_MODE notifications (0x6E 0x1B)
+                        if msg.gid == EnumUciGid.UWB_SNIFFER_GID.value and msg.oid == EnumSnifferOid.SNIFFER_START_RX_MODE_OID.value:
+                            rx_result = SnifferRxResult.from_bytes(msg.payload)
+                            if (rx_result is not None and hasattr(rx_result, 'payload') and rx_result.payload and len(rx_result.payload) > 0):
+                                data = bytes(rx_result.payload)
+                                rssi = rx_result.max_overall_rssi if rx_result.max_overall_rssi is not None else 0.0
+                                packet_count += 1
+                                log_to_file(f"Captured legacy packet {packet_count}: {len(data)} bytes")
 
-                        t = time.time()
-                        sec = int(t)
-                        usec = int((t - sec) * 1_000_000)
+                        elif msg.gid == 0x0A and msg.oid == 0x3A:
+                            if len(msg.payload) >= 56:
+                                # The actual 802.15.4 MAC payload starts at offset 56
+                                data = bytes(msg.payload[56:])
+                                
+                                # Multiplication by 8.9718e-8, on 4 bytes that are encoded in Word-Swapped Little-Endian. 
+                                # They start 11 bytes before the payload.
+                                # The payload starts at 56, so 56 - 11 = 45.
+                                if len(msg.payload) >= 49:
+                                    b = msg.payload[45:49]
+                                    # Word-Swapped Little-Endian: swap the two 16-bit words
+                                    swapped = bytes([b[2], b[3], b[0], b[1]])
+                                    raw_val = struct.unpack("<i", swapped)[0]
+                                    rssi = raw_val * 8.9718e-8
+                                else:
+                                    rssi = 0.0
+                                
+                                packet_count += 1
+                                log_to_file(f"Captured fast packet {packet_count}: {len(data)} bytes, RSSI: {rssi:.2f} dBm")
 
-                        data = bytes(rx_result.payload)
-                        length = len(data)
 
-                        # IEEE 802.15.4 TAP pseudo-header
-                        # Total: 4 (header) + 8 (Channel TLV) + 8 (RSSI TLV) = 20 bytes
-                        tap_header_len = 20
-                        pcap_pseudo_header = struct.pack('<HH', 0, tap_header_len)
+                        # Write to PCAP if we have data
+                        if data is not None and len(data) > 0:
+                            t = time.time()
+                            sec = int(t)
+                            usec = int((t - sec) * 1_000_000)
+                            length = len(data)
 
-                        # Channel TLV: Type=3, Length=3, channel (2B LE), page=0 (1B + 1B pad)
-                        pcap_pseudo_header += struct.pack('<HHHH', 3, 3, channel, 0)
+                            # IEEE 802.15.4 TAP pseudo-header
+                            # Total: 4 (header) + 8 (Channel TLV) + 8 (RSSI TLV) = 20 bytes
+                            tap_header_len = 20
+                            pcap_pseudo_header = struct.pack('<HH', 0, tap_header_len)
 
-                        # RSSI TLV: Type=1, Length=4, RSSI as IEEE 754 float
-                        rssi_val = (rx_result.max_overall_rssi
-                                    if rx_result.max_overall_rssi is not None
-                                    else 0.0)
-                        pcap_pseudo_header += struct.pack('<HHf', 1, 4, float(rssi_val))
+                            # Channel TLV: Type=3, Length=3, channel (2B LE), page=0 (1B + 1B pad)
+                            pcap_pseudo_header += struct.pack('<HHHH', 3, 3, channel, 0)
 
-                        # PCAP packet record
-                        pcap_length = length + tap_header_len
-                        pcap_header = struct.pack('<IIII', sec, usec, pcap_length, pcap_length)
-                        fifo_file.write(pcap_header)
-                        fifo_file.write(pcap_pseudo_header)
-                        fifo_file.write(data)
-                        fifo_file.flush()
+                            # RSSI TLV: Type=1, Length=4, RSSI as IEEE 754 float
+                            pcap_pseudo_header += struct.pack('<HHf', 1, 4, float(rssi))
 
-                        log_to_file(f"Captured {length} bytes.")
+                            # PCAP packet record
+                            pcap_length = length + tap_header_len
+                            pcap_header = struct.pack('<IIII', sec, usec, pcap_length, pcap_length)
+                            fifo_file.write(pcap_header)
+                            fifo_file.write(pcap_pseudo_header)
+                            fifo_file.write(data)
+                            fifo_file.flush()
 
                 # On timeout or non-OK status, loop immediately — chip stays in RX.
             except Exception as capture_error:
-                log_to_file(f"Error in capture loop: {capture_error}")
+                import traceback
+                log_to_file(f"Error in capture loop: {capture_error}\n{traceback.format_exc()}")
                 time.sleep(0.05)
 
     except KeyboardInterrupt:
         log_to_file("Capture stopped by user.")
+    except Exception as general_error:
+        import traceback
+        log_to_file(f"Fatal error in capture script: {general_error}\n{traceback.format_exc()}")
+        sys.stderr.write(f"Fatal error: {general_error}\n")
     finally:
         log_to_file("Closing device connection ...")
         try:
-            device.hard_reset()
-            dongle.ft4222_device.close()
+            if 'device' in locals() and device is not None:
+                device.hard_reset()
+            if 'dongle' in locals() and dongle is not None:
+                dongle.ft4222_device.close()
         except Exception as close_error:
             log_to_file(f"Error during device shutdown: {close_error}")
         try:
-            fifo_file.close()
+            if 'fifo_file' in locals() and fifo_file is not None:
+                fifo_file.close()
         except Exception:
             pass
 

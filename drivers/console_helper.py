@@ -35,7 +35,9 @@ def log_e(err):
     print(colorama.Fore.RED + f'[dbg/E] {filename}:{lineno} {err}' + colorama.Fore.RESET)
 
 
-def as_hex(input: int | list[int] | list[list[int]], uppercase = True, prepend_bytes: int = 0) -> str:
+from typing import Union
+
+def as_hex(input: Union[int, list[int], list[list[int]]], uppercase = True, prepend_bytes: int = 0) -> str:
     '''
     ### Converts int | list[int] | list[list[int]] to a string in hex format.
     

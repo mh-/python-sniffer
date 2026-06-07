@@ -81,6 +81,10 @@ class SnifferRxResult():
         if not isinstance(byte_stream, bytes):
             byte_stream = bytes(byte_stream)
         status = struct.unpack("<B", byte_stream[0:1])[0]
+        if len(byte_stream) < 6:
+            # It's just a simple response with status only
+            return SnifferRxResult(status, EnumUciStatus.UCI_STATUS_FAILED.value, None, None, None, None, None, None, None, None)
+            
         rx_status = struct.unpack("<H", byte_stream[4:6])[0]
         if status == EnumUciStatus.UCI_STATUS_OK.value:
             rx_frame_num = struct.unpack("<B", byte_stream[6:7])[0]

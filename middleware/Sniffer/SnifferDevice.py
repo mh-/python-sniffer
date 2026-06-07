@@ -75,18 +75,17 @@ class SnifferDevice(UCILayer):
         '''
             config sniffer ranging parameters
         '''
-        match channel_id:
-            case 5:
-                frequency = 6489600
-            case 6:
-                frequency = 6988800
-            case 8:
-                frequency = 7488000
-            case 9:
-                frequency = 7987200
-            case default:
-                log_e('Error: Invalid channel id.')
-                return
+        if channel_id == 5:
+            frequency = 6489600
+        elif channel_id == 6:
+            frequency = 6988800
+        elif channel_id == 8:
+            frequency = 7488000
+        elif channel_id == 9:
+            frequency = 7987200
+        else:
+            log_e('Error: Invalid channel id.')
+            return
         tx_ramp_up = 80     # tx ramp-up time: 80us
         rx_ramp_up = 100    # rx ramp-up time: 100us
         tx_power_value = tx_power * 4 # tx power value: 0.25dBm/step
